@@ -1,3 +1,3 @@
 (defpackage #:eliza-lisp
-  (:use #:cl)
+  (:use #:cl #:split-sequence #:cl-ppcre)
   (:export #:main))

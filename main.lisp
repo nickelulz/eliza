@@ -1,4 +1,30 @@
-(in-package #:eliza-lisp)
+(in-package #:eliza)
+
+(defun str-contains-any (str tokens)
+  (flet ((str-contains-token (token)
+	     (not (null (ppcre:scan token str)))))
+    (some #'str-contains-token tokens)))
+
+(defun is-farewell (in)
+  (str-contains-any
+   in
+   (list "bye"
+	 "farewell"
+	 "end")))
+
+(defun randitem (l)
+  "returns a random element of a list"
+  (nth (random (length l)) l))
+
+(defun eliza-farewell ()
+  (randitem
+   (list "Ciao." "Goodbye." "See ya later.")))
+
+(defun next-line ()
+  (format t "~%"))
+
+(defun eliza-say (s)
+  (format t "ELIZA: ~A~%" s))
 
 (defparameter *reflections*
   '(("i" . "you")
@@ -8,81 +34,83 @@
     ("you" . "me")
     ("your" . "my")))
 
-(defun reflect (words)
-  (mapcar (lambda (w)
-            (or (cdr (assoc (string-downcase w) *reflections* :test #'string=))
-                w))
-          words))
+(defparameter *raw-rules*
+  (list
+   (cons "0 YOU 1 ME"
+	 (list
+	  "What makes you think I 2 you?"
+	  "Do you genuinely  believe that I 2 you, or do you simply wish that I 2 you."))
+   (cons "*"
+	 (list
+	  "Please tell me more."
+	  "Interesting... continue.."))))
 
-(defparameter *rules*
-  '(("i need *" . ("Why do you need *?" "Would it help you to get *?"))
-    ("i am *" . ("How long have you been *?" "Do you enjoy being *?"))
-    ("i feel *" . ("Do you often feel *?" "What makes you feel *?"))
-    ("*" . ("Please tell me more." "Let's talk about that."))))
+(defun initialize-rules (raw-rules)
+  "Transform (string . (responses)) to (string . ((response . 0)))"
+  (mapcar (lambda (rule)
+            (destructuring-bind (pattern . responses) rule
+              (cons pattern
+                    (mapcar (lambda (r) (cons r 0)) responses))))
+          raw-rules))
 
-(defun match-pattern (input pattern)
-  (let* ((input-words (remove "" (split-sequence:split-sequence #\Space input)))
-         (pattern-words (remove "" (split-sequence:split-sequence #\Space pattern)))
-         (star-pos (position "*" pattern-words :test #'string=)))
-    (cond
-      (star-pos
-       (let* ((before (subseq pattern-words 0 star-pos))
-              (after (subseq pattern-words (1+ star-pos)))
-              (match-body (subseq input-words (length before)
-                                  (- (length input-words) (length after)))))
-         (values t match-body)))
-      ((equal input-words pattern-words)
-       (values t nil))
-      (t (values nil nil)))))
+(defparameter *rules* (initialize-rules *raw-rules*))
 
-(defun random-elt (list)
-  (nth (random (length list)) list))
+(defun view-rules (raw?)
+  (if raw? *raw-rules* *rules*))
 
-(defun string-join (strings separator)
-  (apply #'concatenate 'string
-         (first strings)
-         (mapcar (lambda (s) (concatenate 'string separator s))
-                 (rest strings))))
+(defun join-strings (l delim)
+  (reduce (lambda (a b) (concatenate 'string a delim b)) l))
+
+(defun decomp->regex (decomp)
+  "Converts a decomposition rule to a regular expression"
+  (let ((tokens (cl-ppcre:split "\\s+" decomp))
+	(regex-parts '()))
+    (loop for token in tokens
+	  do (if (cl-ppcre:scan "^\\d$" token)
+		 (let* ((n (parse-integer token))
+			(regex-group (format nil "((?:\\w+\\s+){0,~D}\\w+)" n)))
+		   (push regex-group regex-parts))
+		 (push token regex-parts)))
+    (join-strings (nreverse regex-parts) "\\s+")))
+
+(defun apply-decomposition (decomp sentence)
+  (multiple-value-bind (match captures)
+      (cl-ppcre:scan-to-strings (decomp->regex decomp) sentence)
+    (cons (not (null captures)) captures)))
+
+(defun apply-reconstruction (reconst tokens)
+  (let ((reconst-tokens (cl-ppcre:split "\\s+" reconst))
+	(sentence-parts '()))
+    (loop for token in reconst-tokens
+	  do (if (cl-ppcre:scan "^\\d$" token)
+		 (let ((index (1- (parse-integer token))))
+		   (push (nth index tokens) sentence-parts))
+		 (push token sentence-parts)))
+    (join-strings (nreverse sentence-parts) " ")))
+
+;; dummy function for now
+(defun reflect (input)
+  input)
 
 (defun generate-response (input)
-  "Generates the next response based on user sentence 's'
-   See: https://en.wikipedia.org/wiki/ELIZA#Pseudocode"
-  (let ((input-str (string-downcase input)))
-    (loop for (pattern . responses) in *rules*
-          do (multiple-value-bind (matched captured) (match-pattern input-str pattern)
-               (when matched
-                 (let* ((reflected (reflect captured))
-                        (filled (substitute #\* #\* (random-elt responses)))
-                        (final (cl-ppcre:regex-replace "\\*" filled (string-join reflected " "))))
-                   (return final)))))
-    ;; fallback
-    (random-elt (cdr (assoc "*" *rules*)))))
-
-(defun is-farewell (s)
-  "Returns whether or not 's' is a farewell (some kind
-   of goodbye)"
-  (string= s "bye"))
-
-(defun randitem (l)
-  "returns a random element of a list"
-  (nth l (random (length l))))
-
-(defun eliza-farewell ()
-  (randitem
-   (list "Goodbye."
-	 "Ciao."
-	 "Talk to you later.")))
-
-(defun eliza-say (s)
-  "Produces an ELIZA response"
-  (format t "ELIZA: ~A~%" s))
+  (loop for (decomp . reconsts) in *rules*
+	do (multiple-value-bind (matches? tokens)
+	       (apply-decomposition (car decomp) (reflect input))
+	     (when matches?
+	       (let ((reconst (alexandria:extremum reconsts #'< :key #'cdr)))
+		 (rplacd reconst (1+ (cdr reconst)))
+		 (return (apply-reconstruction reconst tokens))))))
+  (randitem (cdr (assoc "*" *rules*))))
 
 (defun main ()
-  "Entry point to the program"
-  (eliza-say "Hello. How are you feeling today?")
-  ;; Read user input
+  (eliza-say "Hello. My name is Eliza, and I'll be your therapist today. How are you feeling?")
   (loop (format t "~%YOU: ")
-	(let ((input (read-line)))
+	(let ((input (string-downcase (read-line))))
+	  ;; formatting just so the conversation looks nice
+	  (next-line)
+	  ;; take randomly between 1-3 seconds to respond to feel
+	  ;; more natural
+	  (sleep (random 3))
 	  (when (is-farewell input)
 	    (eliza-say (eliza-farewell))
 	    (return))
